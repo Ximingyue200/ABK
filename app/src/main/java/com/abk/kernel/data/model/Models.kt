@@ -208,6 +208,7 @@ data class GitHubRelease(
     @SerializedName("published_at") val publishedAt: String? = null,
     val body: String? = null,
     @SerializedName("assets_url") val assetsUrl: String? = null,
+    @SerializedName("upload_url") val uploadUrl: String? = null,
     val assets: List<ReleaseAsset> = emptyList()
 )
 
@@ -350,6 +351,37 @@ data class AccessTokenResponse(
     @SerializedName("error_description") val errorDescription: String?
 )
 
+data class GitHubSecretPublicKey(
+    @SerializedName("key_id") val keyId: String,
+    @SerializedName("key") val key: String
+)
+
+data class GitHubRepositorySecret(
+    val name: String,
+    @SerializedName("created_at") val createdAt: String? = null,
+    @SerializedName("updated_at") val updatedAt: String? = null
+)
+
+data class GitHubRepositorySecretsResponse(
+    @SerializedName("total_count") val totalCount: Int,
+    @SerializedName("secrets") val secrets: List<GitHubRepositorySecret> = emptyList()
+)
+
+data class CreateOrUpdateRepositorySecretRequest(
+    @SerializedName("encrypted_value") val encryptedValue: String,
+    @SerializedName("key_id") val keyId: String
+)
+
+data class CreateReleaseRequest(
+    @SerializedName("tag_name") val tagName: String,
+    @SerializedName("target_commitish") val targetCommitish: String? = null,
+    val name: String? = null,
+    val body: String? = null,
+    val draft: Boolean = false,
+    val prerelease: Boolean = true,
+    @SerializedName("generate_release_notes") val generateReleaseNotes: Boolean = false
+)
+
 data class Workflow(
     val id: Long,
     val name: String,
@@ -377,24 +409,100 @@ object CustomExternalModuleStage {
     }
 }
 
+object CustomKernelOptionMode {
+    const val ENABLED_Y = "enabled_y"
+    const val ENABLED_M = "enabled_m"
+    const val DISABLED = "disabled"
+    const val IGNORE = "ignore"
+    const val RAW = "raw"
+
+    val options = listOf(ENABLED_Y, ENABLED_M, DISABLED, IGNORE, RAW)
+
+    fun normalize(value: String?): String = when (value?.trim()?.lowercase()) {
+        ENABLED_Y, "y", "yes", "on", "enable", "enabled" -> ENABLED_Y
+        ENABLED_M, "m", "module", "mod" -> ENABLED_M
+        DISABLED, "n", "no", "off", "disable", "disabled", "not_set", "not-set" -> DISABLED
+        IGNORE, "skip", "unchanged", "keep" -> IGNORE
+        RAW, "value", "raw_value", "raw-value" -> RAW
+        else -> IGNORE
+    }
+}
+
+data class CustomKernelOption(
+    val symbol: String = "",
+    val mode: String = CustomKernelOptionMode.IGNORE,
+    val rawValue: String = "",
+    val source: String = ""
+)
+
 data class CustomExternalModule(
     val url: String = "",
-    val stage: String = CustomExternalModuleStage.AFTER_PATCH
+    val stage: String = CustomExternalModuleStage.AFTER_PATCH,
+    val entryKind: String = CustomExternalModuleEntryKind.MODULE,
+    val groupRepoUrl: String = "",
+    val childId: String = "",
+    val childName: String = "",
+    val groupId: String = "",
+    val groupName: String = "",
+    val groupRole: String = "",
+    val groupDescription: String = ""
+)
+
+object CustomExternalModuleEntryKind {
+    const val MODULE = "module"
+    const val MODULE_SET_CHILD = "module_set_child"
+
+    fun normalize(value: String?): String = when (value?.trim()?.lowercase()) {
+        MODULE_SET_CHILD, "set", "module_set", "module-set", "group_child" -> MODULE_SET_CHILD
+        else -> MODULE
+    }
+}
+
+object ModuleCatalogItemKind {
+    const val MODULE = "module"
+    const val MODULE_SET = "module_set"
+
+    fun normalize(value: String?): String = when (value?.trim()?.lowercase()) {
+        MODULE_SET, "set", "module-set", "moduleset" -> MODULE_SET
+        else -> MODULE
+    }
+}
+
+data class ModuleSetChildMetadata(
+    val id: String = "",
+    val name: String = "",
+    val description: String = "",
+    val repoUrl: String = "",
+    val supportedStages: List<String> = CustomExternalModuleStage.options,
+    val defaultStage: String = CustomExternalModuleStage.AFTER_PATCH,
+    val recommendedStages: List<String> = listOf(CustomExternalModuleStage.AFTER_PATCH),
+    val groupRole: String = "",
+    val controllable: Boolean = false,
+    val hasWebUi: Boolean = false,
+    val magiskModuleName: String = "",
+    val magiskModuleDownloadUrl: String = ""
 )
 
 data class ExternalModuleMetadata(
     val name: String,
     val version: String = "",
     val description: String = "",
+    val kind: String = ModuleCatalogItemKind.MODULE,
+    val moduleSetId: String = "",
     val supportedStages: List<String> = CustomExternalModuleStage.options,
     val defaultStage: String = CustomExternalModuleStage.AFTER_PATCH,
-    val recommendedStages: List<String> = listOf(CustomExternalModuleStage.AFTER_PATCH)
+    val recommendedStages: List<String> = listOf(CustomExternalModuleStage.AFTER_PATCH),
+    val children: List<ModuleSetChildMetadata> = emptyList(),
+    val magiskModuleName: String = "",
+    val magiskModuleDownloadUrl: String = ""
 )
 
 data class ModuleCatalogItem(
     val name: String = "",
     val version: String = "",
     val description: String = "",
+    val kind: String = ModuleCatalogItemKind.MODULE,
+    val moduleSetId: String = "",
     val repoUrl: String = "",
     val defaultStage: String = CustomExternalModuleStage.AFTER_PATCH,
     val supportedStages: List<String> = listOf(CustomExternalModuleStage.AFTER_PATCH),
@@ -421,6 +529,20 @@ data class RuntimeModuleCatalogItem(
     val minApi: Int? = null,
     val maxApi: Int? = null
 )
+
+internal fun runtimeModuleDownloadFileName(id: String, name: String): String {
+    val base = id.ifBlank { name }
+        .replace(Regex("""[^A-Za-z0-9._-]"""), "_")
+        .trim('_')
+        .ifBlank { "module" }
+    return if (base.endsWith(".zip", ignoreCase = true)) base else "${base}-module.zip"
+}
+
+internal fun RuntimeModuleCatalogItem.downloadFileName(): String =
+    runtimeModuleDownloadFileName(id, name)
+
+internal fun AbkRuntimeModule.downloadFileName(): String =
+    runtimeModuleDownloadFileName(id, name.ifBlank { "module" })
 
 data class ModuleCatalogRepository(
     val id: String = "",
@@ -467,7 +589,10 @@ const val KSU_VARIANT_OFFICIAL = "Official"
 const val KSU_VARIANT_SUKISU = "SukiSU"
 const val KSU_VARIANT_RESUKISU = "ReSukiSU"
 const val BUILD_TARGET_GKI = "gki"
+const val BUILD_TARGET_CUSTOM_SOURCE = "custom_source"
 const val BUILD_TARGET_ONEPLUS = "oneplus"
+const val SOURCE_ACCESS_PUBLIC = "public"
+const val SOURCE_ACCESS_GITHUB_PRIVATE = "github_private"
 
 val KSU_BRANCH_STANDARD_OPTIONS = listOf(
     KSU_BRANCH_STABLE,
@@ -492,6 +617,11 @@ val ONEPLUS_KSU_VARIANT_OPTIONS = listOf(
 // App-level build config model (mirrors kernel-custom.yml inputs)
 data class KernelBuildConfig(
     val buildTarget: String = BUILD_TARGET_GKI,
+    val sourceUrl: String = "",
+    val sourceRef: String = "",
+    val sourceAccessMode: String = SOURCE_ACCESS_PUBLIC,
+    val sourceDefconfigs: List<String> = listOf("gki_defconfig"),
+    val sourceDeviceLabel: String = "",
     val androidVersion: String = "android12",
     val kernelVersion: String = "5.10",
     val subLevel: String = "66",
@@ -515,6 +645,7 @@ data class KernelBuildConfig(
     val zramExtraAlgos: String = "",
     val kpmPassword: String = "",
     val virtualizationSupport: String = "off",
+    val customKernelOptions: List<CustomKernelOption> = emptyList(),
     val useCustomExternalModules: Boolean = false,
     val customExternalModules: List<CustomExternalModule> = emptyList(),
     val onePlusCpu: String = "sm8650",
@@ -533,7 +664,8 @@ data class AbkRuntimeStatus(
     val manager: AbkRuntimeManagerInfo? = null,
     @SerializedName("runtime_backend") val runtimeBackend: AbkRuntimeManagerInfo? = null,
     val build: AbkRuntimeBuildInfo? = null,
-    val modules: List<AbkRuntimeModule> = emptyList()
+    val modules: List<AbkRuntimeModule> = emptyList(),
+    @SerializedName("extension_modules") val extensionModules: List<AbkRuntimeModule> = emptyList()
 )
 
 data class AbkRuntimeManagerInfo(
@@ -571,7 +703,15 @@ data class AbkRuntimeModule(
     val description: String = "",
     @SerializedName("repo_url") val repoUrl: String = "",
     val stage: String = "",
+    @SerializedName("entry_kind") val entryKind: String = "",
     val source: String = "",
+    @SerializedName("update_json") val updateJson: String = "",
+    @SerializedName("extension_id") val extensionId: String = "",
+    @SerializedName("companion_package") val companionPackage: String = "",
+    @SerializedName("companion_display_name") val companionDisplayName: String = "",
+    @SerializedName("companion_asset_name") val companionAssetName: String = "",
+    @SerializedName("companion_download_url") val companionDownloadUrl: String = "",
+    @SerializedName("service_activity") val serviceActivity: String = "",
     @SerializedName("module_dir") val moduleDir: String = "",
     @SerializedName("web_root") val webRoot: String = "",
     val readonly: Boolean = false,
@@ -579,10 +719,20 @@ data class AbkRuntimeModule(
     val enabled: Boolean = true,
     val update: Boolean = false,
     val remove: Boolean = false,
+    val metamodule: Boolean = false,
     @SerializedName("has_web_ui") val hasWebUi: Boolean = false,
     @SerializedName("has_action_script") val hasActionScript: Boolean = false,
     @SerializedName("action_supported") val actionSupported: Boolean = false,
-    @SerializedName("kpm_args") val kpmArgs: String = ""
+    @SerializedName("requires_companion_app") val requiresCompanionApp: Boolean = false,
+    @SerializedName("settings_supported") val settingsSupported: Boolean = false,
+    @SerializedName("per_app_supported") val perAppSupported: Boolean = false,
+    @SerializedName("oobe_priority") val oobePriority: Int = 0,
+    @SerializedName("kpm_args") val kpmArgs: String = "",
+    @SerializedName("group_id") val groupId: String = "",
+    @SerializedName("group_name") val groupName: String = "",
+    @SerializedName("group_role") val groupRole: String = "",
+    @SerializedName("group_description") val groupDescription: String = "",
+    @SerializedName("group_repo_url") val groupRepoUrl: String = ""
 )
 
 enum class ManagerSettingKind {
@@ -609,6 +759,15 @@ data class ManagerSettingItem(
     val status: ManagerSettingStatus = ManagerSettingStatus.SUPPORTED
 )
 
+data class KernelTcpCongestionControlState(
+    val currentAlgorithm: String = "",
+    val availableAlgorithms: List<String> = emptyList(),
+    val allowedAlgorithms: List<String> = emptyList()
+) {
+    val available: Boolean
+        get() = availableAlgorithms.isNotEmpty()
+}
+
 data class AppProfileTemplateItem(
     val id: String = "",
     val content: String = ""
@@ -620,8 +779,11 @@ data class RootGrantApp(
     val uid: Int = 0,
     val userName: String = "",
     val isSystemApp: Boolean = false,
-    val profile: RootGrantProfile = RootGrantProfile()
+    val profile: RootGrantProfile = RootGrantProfile(),
+    val profileLoaded: Boolean = false
 )
+
+const val ROOT_PROFILE_FLAG_NO_NEW_PRIVS: Long = 1L
 
 data class RootGrantProfile(
     val name: String = "",
@@ -635,9 +797,21 @@ data class RootGrantProfile(
     val capabilities: List<Int> = emptyList(),
     val context: String = "u:r:ksu:s0",
     val namespace: Int = 0,
+    val flags: Long = ROOT_PROFILE_FLAG_NO_NEW_PRIVS,
     val nonRootUseDefault: Boolean = true,
     val umountModules: Boolean = true,
     val rules: String = ""
+)
+
+data class RootGrantProfileRecoveryRecord(
+    val packageName: String = "",
+    val uid: Int = 0,
+    val label: String = ""
+)
+
+data class RootGrantRecoveryNotice(
+    val title: String = "",
+    val message: String = ""
 )
 
 data class BuildPlan(
@@ -692,6 +866,12 @@ data class DownloadedArtifact(
     val runNumber: Int = 0,
     val sourceAssetId: Long = 0L,
     val sourceAssetName: String? = null,
+    val verified: Boolean = false,
+    val verificationSummary: String? = null,
+    val manifestPayloadKind: String? = null,
+    val manifestKernelSource: String? = null,
+    val manifestFeatureStatus: String? = null,
+    val manifestClientNotice: String? = null,
     val category: ArtifactCategory = type.toArtifactCategory()
 )
 

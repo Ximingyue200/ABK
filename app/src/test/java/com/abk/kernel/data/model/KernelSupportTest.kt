@@ -8,6 +8,31 @@ import org.junit.Test
 class KernelSupportTest {
 
     @Test
+    fun customSourceValidationAcceptsOrderedDuplicatesAndRejectsUnsafePaths() {
+        val valid = KernelBuildConfig(
+            buildTarget = BUILD_TARGET_CUSTOM_SOURCE,
+            sourceUrl = "https://github.com/LineageOS/android_kernel_xiaomi_sm8635.git",
+            sourceRef = "lineage-23.2",
+            sourceDefconfigs = listOf("vendor/base.config", "gki_defconfig", "vendor/base.config"),
+            osPatchLevel = "2025-09",
+            kernelsuVariant = KSU_VARIANT_NONE,
+        )
+        assertEquals(null, KernelSupport.validateCustomSource(valid))
+        assertTrue(
+            KernelSupport.validateCustomSource(
+                valid.copy(sourceDefconfigs = listOf("gki_defconfig", "../secret"))
+            ) != null
+        )
+        assertTrue(
+            KernelSupport.validateCustomSource(
+                valid.copy(sourceUrl = "https://user:pass@github.com/example/kernel.git")
+            ) != null
+        )
+        assertTrue(KernelSupport.validateCustomSource(valid.copy(sourceRef = "refs/heads/../main")) != null)
+        assertTrue(KernelSupport.validateCustomSource(valid.copy(sourceRef = "lineage\n23.2")) != null)
+    }
+
+    @Test
     fun normalizeCoercesInvalidValuesAndDisablesKsuOnlyFeaturesForNoneVariant() {
         val normalized = KernelSupport.normalize(
             KernelBuildConfig(
@@ -129,5 +154,103 @@ class KernelSupportTest {
         assertEquals("android12", normalized.androidVersion)
         assertEquals("5.10", normalized.kernelVersion)
         assertTrue(normalized.cancelSusfs)
+    }
+
+    @Test
+    fun normalizeOnePlus15tUsesSm8850Android16Profile() {
+        val normalized = KernelSupport.normalize(
+            KernelBuildConfig(
+                buildTarget = BUILD_TARGET_ONEPLUS,
+                kernelsuVariant = KSU_VARIANT_SUKISU,
+                cancelSusfs = false,
+                onePlusDeviceManifest = "oneplus_15t",
+                onePlusUseLz4kd = true
+            )
+        )
+
+        assertEquals("sm8850", normalized.onePlusCpu)
+        assertEquals("android16", normalized.androidVersion)
+        assertEquals("6.12", normalized.kernelVersion)
+        assertFalse(normalized.cancelSusfs)
+        assertFalse(normalized.onePlusUseLz4kd)
+        assertEquals(
+            "OnePlus 15T · ColorOS/OxygenOS 16 · android16/6.12 · sm8850",
+            KernelSupport.onePlusDeviceLabel(normalized.onePlusDeviceManifest)
+        )
+    }
+
+    @Test
+    fun normalizeDisablesKpmForResukisuDevAndLatest() {
+        val dev = KernelSupport.normalize(
+            KernelBuildConfig(
+                kernelsuVariant = KSU_VARIANT_RESUKISU,
+                kernelsuBranch = KSU_BRANCH_DEV,
+                useKpm = true,
+                kpmPassword = "secret"
+            )
+        )
+        val latest = KernelSupport.normalize(
+            KernelBuildConfig(
+                kernelsuVariant = KSU_VARIANT_RESUKISU,
+                kernelsuBranch = KSU_BRANCH_LATEST,
+                useKpm = true,
+                kpmPassword = "secret"
+            )
+        )
+
+        assertFalse(dev.useKpm)
+        assertEquals("", dev.kpmPassword)
+        assertFalse(latest.useKpm)
+        assertEquals("", latest.kpmPassword)
+    }
+
+    @Test
+    fun normalizeKeepsKpmForResukisuStableAndCustom() {
+        val stable = KernelSupport.normalize(
+            KernelBuildConfig(
+                kernelsuVariant = KSU_VARIANT_RESUKISU,
+                kernelsuBranch = KSU_BRANCH_STABLE,
+                useKpm = true,
+                kpmPassword = "secret"
+            )
+        )
+        val custom = KernelSupport.normalize(
+            KernelBuildConfig(
+                kernelsuVariant = KSU_VARIANT_RESUKISU,
+                kernelsuBranch = KSU_BRANCH_CUSTOM,
+                useKpm = true,
+                kpmPassword = "secret"
+            )
+        )
+
+        assertTrue(stable.useKpm)
+        assertEquals("secret", stable.kpmPassword)
+        assertTrue(custom.useKpm)
+        assertEquals("secret", custom.kpmPassword)
+    }
+
+    @Test
+    fun normalizeDisablesKpmForOfficialOnStableAndCustom() {
+        val stable = KernelSupport.normalize(
+            KernelBuildConfig(
+                kernelsuVariant = KSU_VARIANT_OFFICIAL,
+                kernelsuBranch = KSU_BRANCH_STABLE,
+                useKpm = true,
+                kpmPassword = "secret"
+            )
+        )
+        val custom = KernelSupport.normalize(
+            KernelBuildConfig(
+                kernelsuVariant = KSU_VARIANT_OFFICIAL,
+                kernelsuBranch = KSU_BRANCH_CUSTOM,
+                useKpm = true,
+                kpmPassword = "secret"
+            )
+        )
+
+        assertFalse(stable.useKpm)
+        assertEquals("", stable.kpmPassword)
+        assertFalse(custom.useKpm)
+        assertEquals("", custom.kpmPassword)
     }
 }

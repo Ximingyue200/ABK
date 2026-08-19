@@ -18,7 +18,7 @@ on:
           - None
         default: SukiSU
       enable_susfs:
-        description: "启用 SUSFS（仅 android14/6.1 与 android15/6.6 生效，5.10/5.15 自动关闭）"
+        description: "启用 SUSFS（android14/6.1、android15/6.6、android16/6.12）"
         required: false
         type: boolean
         default: false
@@ -130,6 +130,7 @@ jobs:
           from pathlib import Path
 
           SUPPORTED_CPUS = [
+              "sm8850",
               "sm8750",
               "sm8735",
               "mt6991",
@@ -146,6 +147,8 @@ jobs:
           ]
 
           SUPPORTED_MANIFESTS = [
+              "oneplus_15",
+              "oneplus_15t",
               "oneplus_13_b",
               "oneplus_13s_b",
               "oneplus_13t_b",
@@ -181,6 +184,8 @@ jobs:
           ]
 
           PROFILE_MAP = {
+              "oneplus_15": ("OnePlus 15", "ColorOS/OxygenOS 16"),
+              "oneplus_15t": ("OnePlus 15T", "ColorOS/OxygenOS 16"),
               "oneplus_13_b": ("OnePlus 13", "ColorOS/OxygenOS 16"),
               "oneplus_13s_b": ("OnePlus 13s", "ColorOS/OxygenOS 16"),
               "oneplus_13t_b": ("OnePlus 13T", "ColorOS/OxygenOS 16"),
@@ -220,6 +225,7 @@ jobs:
               "2": ("android13", "5.15"),
               "3": ("android14", "6.1"),
               "4": ("android15", "6.6"),
+              "5": ("android16", "6.12"),
           }
 
           def run(cmd, cwd=None):
@@ -227,6 +233,11 @@ jobs:
 
           def env_enabled(name):
               return "on" if os.environ.get(name, "").lower() == "true" else "off"
+
+          effective_use_kpm = (
+              os.environ.get("MATRIX_USE_KPM", "").lower() == "true"
+              and os.environ.get("MATRIX_KSU_VARIANT", "") in {"SukiSU", "ReSukiSU"}
+          )
 
           supported_manifest_set = set(SUPPORTED_MANIFESTS)
           cpu_order = {cpu: index for index, cpu in enumerate(SUPPORTED_CPUS)}
@@ -278,7 +289,11 @@ jobs:
                       enable_susfs = (
                           os.environ.get("MATRIX_ENABLE_SUSFS", "").lower() == "true"
                           and os.environ.get("MATRIX_KSU_VARIANT", "") != "None"
-                          and f"{android_version}/{kernel_version}" in {"android14/6.1", "android15/6.6"}
+                          and f"{android_version}/{kernel_version}" in {
+                              "android14/6.1",
+                              "android15/6.6",
+                              "android16/6.12",
+                          }
                       )
                       matrix.append(
                           {
@@ -301,7 +316,7 @@ jobs:
 
           matrix.sort(
               key=lambda row: (
-                  ["5.10", "5.15", "6.1", "6.6"].index(row["kernel_version"]),
+                  ["5.10", "5.15", "6.1", "6.6", "6.12"].index(row["kernel_version"]),
                   cpu_order[row["cpu"]],
                   manifest_order[row["device_manifest"]],
               )
@@ -319,8 +334,8 @@ jobs:
               summary.write("## OnePlus 全矩阵内核构建\n\n")
               summary.write(f"- 总任务数: {len(matrix)}\n")
               summary.write(f"- KernelSU 变体: {os.environ.get('MATRIX_KSU_VARIANT', '')}\n")
-              summary.write(f"- SUSFS: {env_enabled('MATRIX_ENABLE_SUSFS')}（仅 android14/6.1 与 android15/6.6 生效，5.10/5.15 自动 off）\n")
-              summary.write(f"- KPM: {env_enabled('MATRIX_USE_KPM')}（仅 SukiSU/ReSukiSU 生效）\n")
+              summary.write(f"- SUSFS: {env_enabled('MATRIX_ENABLE_SUSFS')}（android14/6.1、android15/6.6、android16/6.12）\n")
+              summary.write(f"- KPM: {'on' if effective_use_kpm else 'off'}（仅 SukiSU/ReSukiSU 生效）\n")
               summary.write(f"- lz4kd: {env_enabled('MATRIX_USE_LZ4KD')}\n")
               summary.write(f"- BBG: {env_enabled('MATRIX_USE_BBG')}\n")
               summary.write(f"- BBR: {env_enabled('MATRIX_USE_BBR')}\n")
@@ -354,7 +369,7 @@ jobs:
       kernel_version: ${{ matrix.kernel_version }}
       ksu_variant: ${{ inputs.kernelsu_variant }}
       enable_susfs: ${{ matrix.enable_susfs }}
-      use_kpm: ${{ inputs.use_kpm }}
+      use_kpm: ${{ inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'ReSukiSU') }}
       use_lz4kd: ${{ inputs.use_lz4kd }}
       use_bbg: ${{ inputs.use_bbg }}
       use_bbr: ${{ inputs.use_bbr }}

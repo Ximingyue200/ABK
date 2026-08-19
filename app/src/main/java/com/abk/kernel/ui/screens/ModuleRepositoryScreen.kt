@@ -3,8 +3,10 @@
 package com.abk.kernel.ui.screens
 
 import android.content.Context
+import android.os.Environment
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -52,17 +54,19 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import com.abk.kernel.ui.components.ShimmerLinearProgress
+import com.abk.kernel.ui.blur.BlurScreenScaffold
+import com.abk.kernel.ui.blur.blurredCardBackground
+import com.abk.kernel.ui.blur.blurredCardSurfaceColor
+import com.abk.kernel.ui.components.AbkInlineLoadingPill
+import com.abk.kernel.ui.components.rememberAbkInteractiveRefreshPresentation
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -96,11 +100,15 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.abk.kernel.R
 import com.abk.kernel.data.model.CustomExternalModuleStage
+import com.abk.kernel.data.model.ExternalModuleMetadata
+import com.abk.kernel.data.model.ModuleCatalogItemKind
 import com.abk.kernel.data.model.ModuleCatalogItem
 import com.abk.kernel.data.model.ModuleCatalogRepository
 import com.abk.kernel.data.model.RuntimeModuleCatalogItem
 import com.abk.kernel.data.model.RuntimeModuleRepository
+import com.abk.kernel.data.model.downloadFileName
 import com.abk.kernel.ui.components.AbkScreenHorizontalPadding
+import com.abk.kernel.ui.components.AppPageBackground
 import com.abk.kernel.ui.components.ObserveChildPageVisibility
 import com.abk.kernel.ui.components.childPageOverlayEnterTransition
 import com.abk.kernel.ui.components.childPageOverlayExitTransition
@@ -110,6 +118,7 @@ import com.abk.kernel.ui.components.rememberChildPageOverlayTransition
 import com.abk.kernel.ui.components.ExpressiveSectionCard
 import com.abk.kernel.ui.components.ExpressiveStatusChip
 import com.abk.kernel.ui.components.ExpressiveTopBar
+import com.abk.kernel.ui.theme.appPageBackgroundColor
 import com.abk.kernel.ui.theme.uiSurfaceColor
 import com.abk.kernel.utils.LocaleHelper
 import com.abk.kernel.utils.DownloadUtils
@@ -248,7 +257,7 @@ fun ModuleRepositoryScreen(
         scope.launch {
             val downloadName = module.module.downloadFileName()
             val downloadResult = withContext(Dispatchers.IO) {
-                DownloadUtils.downloadDirectAsset(
+                DownloadUtils.downloadRuntimeModuleAsset(
                     context = context,
                     token = null,
                     url = module.module.zipUrl,
@@ -338,12 +347,14 @@ fun ModuleRepositoryScreen(
             .height(maxHeight + childPageTopInset + childPageBottomInset)
             .offset(y = -childPageTopInset)
 
-        Scaffold(
-            containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surface),
+        BlurScreenScaffold(
+            blurConfig = state.blurConfig,
+            containerColor = appPageBackgroundColor(uiSurfaceColor(MaterialTheme.colorScheme.surface)),
             topBar = {
                 ExpressiveTopBar(
                     title = runtimeRepoTitleLabel(context),
                     scrollBehavior = scrollBehavior,
+                    enableBlur = state.blurEnabled,
                     actions = {
                         IconButton(onClick = ::openRepositorySettings) {
                             Icon(
@@ -354,9 +365,9 @@ fun ModuleRepositoryScreen(
                     }
                 )
             }
-        ) { padding ->
+        ) { topBarHeight ->
             RuntimeModuleRepositoryListContent(
-                padding = padding,
+                topBarHeight = topBarHeight,
                 modules = filteredModules,
                 totalModules = mergedModules.size,
                 computing = listComputing,
@@ -416,7 +427,8 @@ fun ModuleRepositoryScreen(
                     backgroundUri = state.customBackgroundUri,
                     backgroundImageEnabled = state.backgroundImageEnabled
                 )
-                Scaffold(
+                BlurScreenScaffold(
+                    blurConfig = state.blurConfig,
                     containerColor = Color.Transparent,
                     topBar = {
                         ExpressiveTopBar(
@@ -425,12 +437,13 @@ fun ModuleRepositoryScreen(
                                 IconButton(onClick = childPageBack::requestDismiss) {
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.module_repo_back))
                                 }
-                            }
+                            },
+                            enableBlur = state.blurEnabled
                         )
                     }
-                ) { padding ->
+                ) { topBarHeight ->
                     RuntimeModuleRepositorySettingsPage(
-                        padding = padding,
+                        topBarHeight = topBarHeight,
                         repositories = state.runtimeModuleRepositories,
                         refreshingRepositoryIds = state.refreshingRuntimeModuleRepositoryIds,
                         onAddRepository = vm::addRuntimeModuleRepository,
@@ -453,6 +466,7 @@ private fun BuildModuleRepositoryScreenContent(
     val state by vm.uiState.collectAsState()
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
+    val coroutineScope = rememberCoroutineScope()
     val motionScheme = MaterialTheme.motionScheme
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
     var searchQuery by rememberSaveable { mutableStateOf("") }
@@ -463,6 +477,9 @@ private fun BuildModuleRepositoryScreenContent(
     )
     var pendingCatalogModule by remember { mutableStateOf<ModuleCatalogItem?>(null) }
     var selectedCatalogModuleStages by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var pendingModuleSetMetadata by remember { mutableStateOf<ExternalModuleMetadata?>(null) }
+    var selectedModuleSetChildren by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var moduleSetStageSelections by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
     val mergedModulesState by produceState(
         initialValue = ModuleListComputation<BuildPageMergedCatalogModule>(
             loading = state.buildModuleRepositories.isNotEmpty()
@@ -535,6 +552,158 @@ private fun BuildModuleRepositoryScreenContent(
     }
 
     pendingCatalogModule?.let { module ->
+        if (module.kind == ModuleCatalogItemKind.MODULE_SET) {
+            val metadata = pendingModuleSetMetadata
+            if (metadata != null) {
+                val children = metadata.children
+                val addToBuildLabel = stringResource(R.string.module_repo_add_to_build)
+                AlertDialog(
+                    onDismissRequest = {
+                        pendingCatalogModule = null
+                        pendingModuleSetMetadata = null
+                        selectedModuleSetChildren = emptyList()
+                        moduleSetStageSelections = emptyMap()
+                    },
+                    icon = { Icon(Icons.Default.Extension, null) },
+                    title = { Text(module.buildDisplayName()) },
+                    text = {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 420.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = if (module.description.isNotBlank()) module.description else addToBuildLabel,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            children.forEach { child ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.Top,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Checkbox(
+                                        checked = child.id in selectedModuleSetChildren,
+                                        onCheckedChange = { checked ->
+                                            selectedModuleSetChildren = if (checked) {
+                                                (selectedModuleSetChildren + child.id).distinct()
+                                            } else {
+                                                selectedModuleSetChildren - child.id
+                                            }
+                                        }
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(child.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                        if (child.description.isNotBlank()) {
+                                            Text(
+                                                child.description,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        if (child.id in selectedModuleSetChildren) {
+                                            val options = child.supportedStages
+                                            val initialStages = child.recommendedStages
+                                                .filter { it in options }
+                                                .ifEmpty { listOf(child.defaultStage) }
+                                            val selectedStages = moduleSetStageSelections[child.id] ?: initialStages
+                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                options.forEach { stage ->
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        Checkbox(
+                                                            checked = stage in selectedStages,
+                                                            onCheckedChange = { checked ->
+                                                                val updatedStages = if (checked) {
+                                                                    (selectedStages + stage).distinct()
+                                                                } else {
+                                                                    selectedStages - stage
+                                                                }
+                                                                moduleSetStageSelections = moduleSetStageSelections + (child.id to updatedStages)
+                                                            }
+                                                        )
+                                                        Text(
+                                                            text = buildString {
+                                                                append(stage)
+                                                                if (stage in child.recommendedStages) {
+                                                                    append(stringResource(R.string.module_repo_recommended))
+                                                                }
+                                                            },
+                                                            style = MaterialTheme.typography.bodySmall
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                val selections = children
+                                    .filter { it.id in selectedModuleSetChildren }
+                                    .map { child ->
+                                        child to (
+                                            moduleSetStageSelections[child.id]
+                                                ?.distinct()
+                                                ?.filter { stage -> stage in child.supportedStages }
+                                                ?.ifEmpty {
+                                                    child.recommendedStages
+                                                        .filter { stage -> stage in child.supportedStages }
+                                                        .ifEmpty { listOf(child.defaultStage) }
+                                                }
+                                                ?: child.recommendedStages
+                                                    .filter { stage -> stage in child.supportedStages }
+                                                    .ifEmpty { listOf(child.defaultStage) }
+                                        )
+                                    }
+                                    .filter { (_, stages) -> stages.isNotEmpty() }
+                                if (vm.replaceModuleSetSelection(module.repoUrl, metadata, selections)) {
+                                    pendingCatalogModule = null
+                                    pendingModuleSetMetadata = null
+                                    selectedModuleSetChildren = emptyList()
+                                    moduleSetStageSelections = emptyMap()
+                                    Toast.makeText(context, context.getString(R.string.module_repo_added_to_build), Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            enabled = selectedModuleSetChildren.isNotEmpty() && children
+                                .filter { it.id in selectedModuleSetChildren }
+                                .all { child ->
+                                    val selectedStages = moduleSetStageSelections[child.id]
+                                        ?: child.recommendedStages
+                                            .filter { stage -> stage in child.supportedStages }
+                                            .ifEmpty { listOf(child.defaultStage) }
+                                    selectedStages.any { stage -> stage in child.supportedStages }
+                                }
+                        ) {
+                            Text(stringResource(R.string.module_repo_add_selected))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = {
+                                pendingCatalogModule = null
+                                pendingModuleSetMetadata = null
+                                selectedModuleSetChildren = emptyList()
+                                moduleSetStageSelections = emptyMap()
+                            }
+                        ) {
+                            Text(stringResource(R.string.cancel))
+                        }
+                    }
+                )
+            }
+            return@let
+        }
         val supportedStages = module.buildNormalizedSupportedStages()
         val recommendedStages = module.buildNormalizedRecommendedStages().toSet()
         val addedStages = module.addedStages(selectedModules).toSet()
@@ -646,12 +815,14 @@ private fun BuildModuleRepositoryScreenContent(
             .height(maxHeight + childPageTopInset + childPageBottomInset)
             .offset(y = -childPageTopInset)
 
-        Scaffold(
-            containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surface),
+        BlurScreenScaffold(
+            blurConfig = state.blurConfig,
+            containerColor = appPageBackgroundColor(uiSurfaceColor(MaterialTheme.colorScheme.surface)),
             topBar = {
                 ExpressiveTopBar(
                     title = buildRepoTitleLabel(context),
                     scrollBehavior = scrollBehavior,
+                    enableBlur = state.blurEnabled,
                     actions = {
                         IconButton(onClick = ::openRepositorySettings) {
                             Icon(Icons.Default.Dns, contentDescription = buildRepoManageLabel(context))
@@ -659,9 +830,9 @@ private fun BuildModuleRepositoryScreenContent(
                     }
                 )
             }
-        ) { padding ->
+        ) { topBarHeight ->
             BuildModuleRepositoryListContent(
-                padding = padding,
+                topBarHeight = topBarHeight,
                 modules = filteredModules,
                 totalModules = mergedModules.size,
                 computing = listComputing,
@@ -672,8 +843,24 @@ private fun BuildModuleRepositoryScreenContent(
                 onSearchQueryChange = { searchQuery = it },
                 onOpenRepositorySettings = ::openRepositorySettings,
                 onAddModule = { module ->
-                    pendingCatalogModule = module
-                    selectedCatalogModuleStages = module.initialStageSelection(selectedModules)
+                    if (module.kind == ModuleCatalogItemKind.MODULE_SET) {
+                        coroutineScope.launch {
+                            val metadata = vm.checkCustomExternalModuleMetadata(module.repoUrl)
+                            if (metadata != null) {
+                                pendingCatalogModule = module
+                                pendingModuleSetMetadata = metadata
+                                selectedModuleSetChildren = metadata.children.map { it.id }
+                                moduleSetStageSelections = metadata.children.associate { child ->
+                                    child.id to child.recommendedStages
+                                        .filter { stage -> stage in child.supportedStages }
+                                        .ifEmpty { listOf(child.defaultStage) }
+                                }
+                            }
+                        }
+                    } else {
+                        pendingCatalogModule = module
+                        selectedCatalogModuleStages = module.initialStageSelection(selectedModules)
+                    }
                 },
                 onOpenModule = { module ->
                     val url = module.homepage.ifBlank { module.repoUrl }
@@ -713,7 +900,8 @@ private fun BuildModuleRepositoryScreenContent(
                     backgroundUri = state.customBackgroundUri,
                     backgroundImageEnabled = state.backgroundImageEnabled
                 )
-                Scaffold(
+                BlurScreenScaffold(
+                    blurConfig = state.blurConfig,
                     containerColor = Color.Transparent,
                     topBar = {
                         ExpressiveTopBar(
@@ -722,12 +910,13 @@ private fun BuildModuleRepositoryScreenContent(
                                 IconButton(onClick = childPageBack::requestDismiss) {
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.module_repo_back))
                                 }
-                            }
+                            },
+                            enableBlur = state.blurEnabled
                         )
                     }
-                ) { padding ->
+                ) { topBarHeight ->
                     BuildModuleRepositorySettingsPage(
-                        padding = padding,
+                        topBarHeight = topBarHeight,
                         repositories = state.buildModuleRepositories,
                         refreshingRepositoryIds = state.refreshingBuildModuleRepositoryIds,
                         onAddRepository = vm::addBuildModuleRepository,
@@ -743,7 +932,7 @@ private fun BuildModuleRepositoryScreenContent(
 
 @Composable
 private fun RuntimeModuleRepositoryListContent(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     modules: List<MergedRuntimeCatalogModule>,
     totalModules: Int,
     computing: Boolean,
@@ -760,12 +949,11 @@ private fun RuntimeModuleRepositoryListContent(
     val showInitialLoading = computing || (refreshing && totalModules == 0 && searchQuery.isBlank())
     LazyColumn(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .nestedScroll(scrollBehavior.nestedScrollConnection)
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        contentPadding = PaddingValues(bottom = bottomPadding + 24.dp)
+        contentPadding = PaddingValues(top = topBarHeight + 16.dp, bottom = bottomPadding + 24.dp)
     ) {
         item(key = "search") {
             CompactModuleSearchField(
@@ -776,8 +964,8 @@ private fun RuntimeModuleRepositoryListContent(
 
         if (refreshing && !showInitialLoading) {
             item(key = "refreshing") {
-                ShimmerLinearProgress(
-                    progress = { null },
+                AbkInlineLoadingPill(
+                    text = stringResource(R.string.module_repo_building_list),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -815,24 +1003,11 @@ private fun RuntimeModuleRepositoryListContent(
 
 @Composable
 private fun ModuleRepositoryInitialLoading() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 48.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            LoadingIndicator(Modifier.size(42.dp))
-            Text(
-                text = stringResource(R.string.module_repo_building_list),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
+    AbkInlineLoadingPill(
+        text = stringResource(R.string.module_repo_building_list),
+        modifier = Modifier.padding(vertical = 48.dp),
+        compact = false
+    )
 }
 
 @Composable
@@ -881,11 +1056,14 @@ private fun RuntimeModuleRepositoryListItem(
 ) {
     val context = LocalContext.current
     val module = merged.module
+    val shape = RoundedCornerShape(8.dp)
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .blurredCardBackground(shape),
+        shape = shape,
         colors = CardDefaults.cardColors(
-            containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
+            containerColor = blurredCardSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
@@ -1099,7 +1277,7 @@ private fun ModuleTagChip(
 
 @Composable
 private fun RuntimeModuleRepositorySettingsPage(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     repositories: List<RuntimeModuleRepository>,
     refreshingRepositoryIds: Set<String>,
     onAddRepository: (String) -> Unit,
@@ -1107,15 +1285,18 @@ private fun RuntimeModuleRepositorySettingsPage(
     onRefreshRepository: (String) -> Unit,
     onDeleteRepository: (String) -> Unit
 ) {
+    val refreshAllPresentation = rememberAbkInteractiveRefreshPresentation(
+        loading = refreshingRepositoryIds.isNotEmpty()
+    )
     var repositoryUrl by rememberSaveable { mutableStateOf("") }
     Column(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Spacer(Modifier.height(topBarHeight + 16.dp))
         ExpressiveSectionCard(
             title = runtimeRepoCentralLabel(LocalContext.current),
             subtitle = runtimeRepoCentralDescLabel(LocalContext.current),
@@ -1145,7 +1326,10 @@ private fun RuntimeModuleRepositorySettingsPage(
                     Text(stringResource(R.string.add))
                 }
                 OutlinedButton(
-                    onClick = onRefreshAll,
+                    onClick = {
+                        refreshAllPresentation.beginRefresh()
+                        onRefreshAll()
+                    },
                     enabled = repositories.isNotEmpty(),
                     modifier = Modifier
                         .weight(1f)
@@ -1170,6 +1354,12 @@ private fun RuntimeModuleRepositorySettingsPage(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        } else if (refreshAllPresentation.showLoading) {
+            AbkInlineLoadingPill(
+                text = stringResource(R.string.module_repo_building_list),
+                modifier = Modifier.fillMaxWidth(),
+                compact = false
+            )
         } else {
             repositories.forEach { repository ->
                 RuntimeModuleRepositoryCard(
@@ -1192,74 +1382,79 @@ private fun RuntimeModuleRepositoryCard(
     onRefresh: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val refreshPresentation = rememberAbkInteractiveRefreshPresentation(loading = refreshing)
     ExpressiveSectionCard(
         title = repository.name.ifBlank { repository.url },
         subtitle = repository.url,
         icon = Icons.Default.Dns
     ) {
-        if (refreshing) {
-            ShimmerLinearProgress(
-                progress = { null },
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            ExpressiveStatusChip(
-                label = stringResource(R.string.module_repo_module_count, repository.modules.size),
-                icon = Icons.Default.Extension,
-                color = MaterialTheme.colorScheme.primary
-            )
-            if (repository.skippedCount > 0) {
-                ExpressiveStatusChip(
-                    label = stringResource(R.string.module_repo_skipped_count, repository.skippedCount),
-                    icon = Icons.Default.Link,
-                    color = MaterialTheme.colorScheme.error
+        Crossfade(targetState = refreshPresentation.showLoading, label = "runtime-repo-card-refresh") { showingLoading ->
+            if (showingLoading) {
+                AbkInlineLoadingPill(
+                    text = stringResource(R.string.module_repo_refreshing_repository),
+                    modifier = Modifier.fillMaxWidth()
                 )
-            }
-        }
-        repository.error?.let {
-            Text(
-                text = it,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        val indexUrl = repository.indexJsonUrl.ifBlank { repository.url }
-        Text(
-            text = indexUrl,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = onRefresh,
-                enabled = !refreshing,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(42.dp)
-            ) {
-                if (refreshing) {
-                    CircularProgressIndicator(modifier = Modifier.size(17.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Default.Refresh, null, modifier = Modifier.size(17.dp))
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ExpressiveStatusChip(
+                            label = stringResource(R.string.module_repo_module_count, repository.modules.size),
+                            icon = Icons.Default.Extension,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        if (repository.skippedCount > 0) {
+                            ExpressiveStatusChip(
+                                label = stringResource(R.string.module_repo_skipped_count, repository.skippedCount),
+                                icon = Icons.Default.Link,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                    repository.error?.let {
+                        Text(
+                            text = it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    val indexUrl = repository.indexJsonUrl.ifBlank { repository.url }
+                    Text(
+                        text = indexUrl,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                refreshPresentation.beginRefresh()
+                                onRefresh()
+                            },
+                            enabled = !refreshing,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(42.dp)
+                        ) {
+                            Icon(Icons.Default.Refresh, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.refresh))
+                        }
+                        OutlinedButton(
+                            onClick = onDelete,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(42.dp)
+                        ) {
+                            Icon(Icons.Default.Delete, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.delete))
+                        }
+                    }
                 }
-                Spacer(Modifier.width(6.dp))
-                Text(stringResource(R.string.refresh))
-            }
-            OutlinedButton(
-                onClick = onDelete,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(42.dp)
-            ) {
-                Icon(Icons.Default.Delete, null, modifier = Modifier.size(17.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(stringResource(R.string.delete))
             }
         }
     }
@@ -1434,32 +1629,10 @@ private fun ModuleRepositoryPageBackground(
     backgroundUri: String?,
     backgroundImageEnabled: Boolean
 ) {
-    val colorScheme = MaterialTheme.colorScheme
-    val hasBackground = backgroundImageEnabled && !backgroundUri.isNullOrBlank()
-    val scrimColor = if (colorScheme.surface.luminance() > 0.5f) {
-        colorScheme.surface.copy(alpha = 0.28f)
-    } else {
-        Color.Black.copy(alpha = 0.38f)
-    }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(colorScheme.surface)
-    ) {
-        if (hasBackground) {
-            AsyncImage(
-                model = backgroundUri,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(scrimColor)
-            )
-        }
-    }
+    AppPageBackground(
+        backgroundUri = backgroundUri,
+        backgroundImageEnabled = backgroundImageEnabled
+    )
 }
 
 private data class MergedRuntimeCatalogModule(
@@ -1512,14 +1685,6 @@ private fun RuntimeModuleCatalogItem.preferredOpenUrl(): String =
         ?: donate.takeIf { it.isNotBlank() }
         ?: zipUrl
 
-private fun RuntimeModuleCatalogItem.downloadFileName(): String {
-    val base = id.ifBlank { name }
-        .replace(Regex("""[^A-Za-z0-9._-]"""), "_")
-        .trim('_')
-        .ifBlank { "module" }
-    return if (base.endsWith(".zip", ignoreCase = true)) base else "${base}-module.zip"
-}
-
 private fun String.repoName(): String =
     trim()
         .trimEnd('/')
@@ -1564,7 +1729,7 @@ private fun BuildPageMergedCatalogModule.matchesQuery(query: String): Boolean {
 
 @Composable
 private fun BuildModuleRepositoryListContent(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     modules: List<BuildPageMergedCatalogModule>,
     totalModules: Int,
     computing: Boolean,
@@ -1583,12 +1748,11 @@ private fun BuildModuleRepositoryListContent(
     val showInitialLoading = computing || (refreshing && totalModules == 0 && searchQuery.isBlank())
     LazyColumn(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .nestedScroll(scrollBehavior.nestedScrollConnection)
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        contentPadding = PaddingValues(bottom = bottomPadding + 24.dp)
+        contentPadding = PaddingValues(top = topBarHeight + 16.dp, bottom = bottomPadding + 24.dp)
     ) {
         item(key = "search") {
             CompactModuleSearchField(
@@ -1599,8 +1763,8 @@ private fun BuildModuleRepositoryListContent(
 
         if (refreshing && !showInitialLoading) {
             item(key = "refreshing") {
-                ShimmerLinearProgress(
-                    progress = { null },
+                AbkInlineLoadingPill(
+                    text = stringResource(R.string.module_repo_building_list),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -1654,11 +1818,14 @@ private fun BuildModuleRepositoryListContent(
                 val allStagesAdded = supportedStages.all { stage ->
                     module.repoUrl.trim().lowercase() to stage in selectedModules
                 }
+                val shape = RoundedCornerShape(8.dp)
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .blurredCardBackground(shape),
+                    shape = shape,
                     colors = CardDefaults.cardColors(
-                        containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
+                        containerColor = blurredCardSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
                     ),
                     elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                 ) {
@@ -1773,7 +1940,7 @@ private fun BuildModuleRepositoryListContent(
 
 @Composable
 private fun BuildModuleRepositorySettingsPage(
-    padding: PaddingValues,
+    topBarHeight: Dp,
     repositories: List<ModuleCatalogRepository>,
     refreshingRepositoryIds: Set<String>,
     onAddRepository: (String) -> Unit,
@@ -1782,15 +1949,18 @@ private fun BuildModuleRepositorySettingsPage(
     onDeleteRepository: (String) -> Unit
 ) {
     val context = LocalContext.current
+    val refreshAllPresentation = rememberAbkInteractiveRefreshPresentation(
+        loading = refreshingRepositoryIds.isNotEmpty()
+    )
     var repositoryUrl by rememberSaveable { mutableStateOf("") }
     Column(
         modifier = Modifier
-            .padding(padding)
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = AbkScreenHorizontalPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Spacer(Modifier.height(topBarHeight + 16.dp))
         ExpressiveSectionCard(
             title = buildRepoCentralLabel(context),
             subtitle = buildRepoCentralDescLabel(context),
@@ -1818,7 +1988,10 @@ private fun BuildModuleRepositorySettingsPage(
                     Text(stringResource(R.string.add))
                 }
                 OutlinedButton(
-                    onClick = onRefreshAll,
+                    onClick = {
+                        refreshAllPresentation.beginRefresh()
+                        onRefreshAll()
+                    },
                     enabled = repositories.isNotEmpty(),
                     modifier = Modifier.weight(1f).height(44.dp)
                 ) {
@@ -1841,6 +2014,12 @@ private fun BuildModuleRepositorySettingsPage(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        } else if (refreshAllPresentation.showLoading) {
+            AbkInlineLoadingPill(
+                text = stringResource(R.string.module_repo_building_list),
+                modifier = Modifier.fillMaxWidth(),
+                compact = false
+            )
         } else {
             repositories.forEach { repository ->
                 BuildModuleCatalogRepositoryCard(
@@ -1863,70 +2042,75 @@ private fun BuildModuleCatalogRepositoryCard(
     onRefresh: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val refreshPresentation = rememberAbkInteractiveRefreshPresentation(loading = refreshing)
     ExpressiveSectionCard(
         title = repository.name.ifBlank { repository.url },
         subtitle = repository.url,
         icon = Icons.Default.Dns
     ) {
-        if (refreshing) {
-            ShimmerLinearProgress(
-                progress = { null },
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            ExpressiveStatusChip(
-                label = stringResource(R.string.module_repo_module_count, repository.modules.size),
-                icon = Icons.Default.Extension,
-                color = MaterialTheme.colorScheme.primary
-            )
-            if (repository.skippedCount > 0) {
-                ExpressiveStatusChip(
-                    label = stringResource(R.string.module_repo_skipped_count, repository.skippedCount),
-                    icon = Icons.Default.Link,
-                    color = MaterialTheme.colorScheme.error
+        Crossfade(targetState = refreshPresentation.showLoading, label = "build-repo-card-refresh") { showingLoading ->
+            if (showingLoading) {
+                AbkInlineLoadingPill(
+                    text = stringResource(R.string.module_repo_refreshing_repository),
+                    modifier = Modifier.fillMaxWidth()
                 )
-            }
-        }
-        repository.error?.let {
-            Text(
-                text = it,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        val indexUrl = repository.indexJsonUrl.ifBlank { repository.url }
-        Text(
-            text = indexUrl,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = onRefresh,
-                enabled = !refreshing,
-                modifier = Modifier.weight(1f).height(42.dp)
-            ) {
-                if (refreshing) {
-                    CircularProgressIndicator(modifier = Modifier.size(17.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Default.Refresh, null, modifier = Modifier.size(17.dp))
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ExpressiveStatusChip(
+                            label = stringResource(R.string.module_repo_module_count, repository.modules.size),
+                            icon = Icons.Default.Extension,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        if (repository.skippedCount > 0) {
+                            ExpressiveStatusChip(
+                                label = stringResource(R.string.module_repo_skipped_count, repository.skippedCount),
+                                icon = Icons.Default.Link,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                    repository.error?.let {
+                        Text(
+                            text = it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    val indexUrl = repository.indexJsonUrl.ifBlank { repository.url }
+                    Text(
+                        text = indexUrl,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                refreshPresentation.beginRefresh()
+                                onRefresh()
+                            },
+                            enabled = !refreshing,
+                            modifier = Modifier.weight(1f).height(42.dp)
+                        ) {
+                            Icon(Icons.Default.Refresh, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.refresh))
+                        }
+                        OutlinedButton(
+                            onClick = onDelete,
+                            modifier = Modifier.weight(1f).height(42.dp)
+                        ) {
+                            Icon(Icons.Default.Delete, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.delete))
+                        }
+                    }
                 }
-                Spacer(Modifier.width(6.dp))
-                Text(stringResource(R.string.refresh))
-            }
-            OutlinedButton(
-                onClick = onDelete,
-                modifier = Modifier.weight(1f).height(42.dp)
-            ) {
-                Icon(Icons.Default.Delete, null, modifier = Modifier.size(17.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(stringResource(R.string.delete))
             }
         }
     }
